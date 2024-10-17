@@ -8,93 +8,19 @@
 #include <assert.h>
 #include <string.h>
 
-
-static void do_something(int connfd)
-{
-    char rbuf[64] = {};
-    ssize_t n = read(connfd, rbuf, sizeof(rbuf) - 1);
-    if (n < 0)
-    {
-        perror("read() error");
-        return;
-    }
-    printf("Client says: %s\n", rbuf);
-
-    char wbuf[] = "world";
-    write(connfd, wbuf, strlen(wbuf));
-}
-
-static int32_t read_full(int fd, char *buf, size_t n)
-{
-    while (n > 0)
-    {
-        ssize_t rv = read(fd, buf, n);
-        if (rv <= 0) return -1; // error -1 and EOF is 0
-
-        assert((size_t)rv <= n);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-static int32_t write_all(int fd, char* buf, size_t n)
-{
-    while (n > 0)
-    {
-        ssize_t rv = write(fd, buf, n);
-        if (rv <= 0) return -1; // error
-
-        assert((size_t)rv <= n);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
+// Global Variables
 const size_t k_max_msg = 4096;
+const size_t max_msg = k_max_msg * 10;
+const size_t msg_array_size = 10;
+char messages[msg_array_size][k_max_msg];
 
-static int32_t one_request(int connfd)
-{
-    // 4 bytes header
-    char rbuf[4 + k_max_msg + 1];
-    int errno = 0;
-    int32_t err = read_full(connfd, rbuf, 4);
-    if (err) {
-        if (errno == 0) {
-            printf("EOF\n");
-        } else {
-            perror("read() error");
-        }
-        return err;
-    }
+// Prototypes
+static int32_t multiple_request(int connfd);
+static int32_t one_request(int connfd);
+static void do_something(int connfd);
+static int32_t read_full(int fd, char *buf, size_t n);
+static int32_t write_all(int fd, char *buf, size_t n);
 
-    uint32_t len = 0;
-    memcpy(&len, rbuf, 4); // assume little endian
-    if (len > k_max_msg){
-        printf("Message too long");
-        return -1;
-    }
-
-    // request body
-    err = read_full(connfd, &rbuf[4], len);
-    if (err){
-        perror("read() error");
-        return err;
-    }
-
-    // do something
-    rbuf[4 + len] = '\0';
-    printf("client says: %s\n", &rbuf[4]);
-
-    // reply using the same protocol
-    const char reply[] = "world";
-    char wbuf[4 + sizeof(reply)];
-    len = (uint32_t)strlen(reply);
-    memcpy(wbuf, &len, 4);
-    memcpy(&wbuf[4], reply, len);
-    return write_all(connfd, wbuf, 4 + len);
-}
 
 int main(int argc, char** argv)
 {
@@ -123,8 +49,112 @@ int main(int argc, char** argv)
         {
             continue; // error
         }
-        do_something(connfd);
+        while (true) {
+            int32_t err = multiple_request(connfd);
+            if (err) perror("one_request()");
+            if (err == 0) break;
+        }
         close(connfd);
     }
+
     return 0;
+}
+
+static int32_t read_full(int fd, char *buf, size_t n)
+{
+    while (n > 0)
+    {
+        ssize_t rv = read(fd, buf, n);
+        if (rv <= 0) return rv; // error -1 and EOF is 0
+
+        assert((size_t)rv <= n);
+        n -= (size_t)rv;
+        buf += rv;
+    }
+    return 0;
+}
+
+static int32_t write_all(int fd, char* buf, size_t n)
+{
+    while (n > 0)
+    {
+        ssize_t rv = write(fd, buf, n);
+        if (rv <= 0) return -1; // error
+
+        assert((size_t)rv <= n);
+        n -= (size_t)rv;
+        buf += rv;
+    }
+    return 0;
+}
+
+static int32_t multiple_request(int connfd){
+
+    // Read as many bytes as possible
+    char rbuf[max_msg];
+    int32_t err = read_full(connfd, rbuf, max_msg);
+    if (err == 0){
+        printf("EOF\n");
+    }
+
+    // Parse the message
+    size_t index = 0;
+    uint32_t len = 0;
+    uint32_t total_byte_stream = 0;
+
+    while (index < msg_array_size){
+        memcpy(&len, &rbuf[total_byte_stream + 4*index], 4);
+        if (len > max_msg) {
+            break;
+        }
+        memcpy(messages[index], &rbuf[4+total_byte_stream+4*(index)], len);
+        index++;
+        total_byte_stream += len;
+    }
+
+    // Print out messages
+    for(index = 0; index < msg_array_size; index++){
+        printf("Msg num: %lu, Client says: %s\n", index+1, messages[index]);
+    }
+
+    return 0;
+
+}
+static int32_t one_request(int connfd)
+{
+    // 4 bytes header
+    char rbuf[4 + k_max_msg + 1];
+    int32_t err = read_full(connfd, rbuf, 4);
+    if (err == 0) {
+        printf("EOF\n");
+    } else {
+        perror("read() error");
+    }
+
+    uint32_t len = 0;
+    memcpy(&len, rbuf, 4); // assume little endian
+    if (len > k_max_msg){
+        printf("Message too long");
+        return -1;
+    }
+
+    // request body
+    err = read_full(connfd, &rbuf[4], len);
+    if (err){
+        perror("read() error");
+        return err;
+    }
+
+    // do something
+    rbuf[4 + len] = '\0';
+    printf("client says: %s\n", &rbuf[4]);
+
+    // reply using the same protocol
+    const char reply[] = "Reply to client";
+    char wbuf[4 + sizeof(reply)];
+    len = (uint32_t)strlen(reply);
+
+    memcpy(wbuf, &len, 4);
+    memcpy(&wbuf[4], reply, len);
+    return write_all(connfd, wbuf, 4 + len);
 }
