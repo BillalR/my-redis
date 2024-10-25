@@ -107,6 +107,4 @@ static int32_t query(int fd, const char **msg){
 
     free(wbuf);
     return 0;
-
-
 }
